@@ -8,6 +8,7 @@ import Environment from "./Environment";
 import Certificate from "./Certificate";
 import Domain from "./Domain";
 import EnvironmentAccess from "./EnvironmentAccess";
+import EnvironmentBackup from "./EnvironmentBackup";
 import ProjectAccess from "./ProjectAccess";
 import Metrics from "./Metrics";
 import ProjectLevelVariable from "./ProjectLevelVariable";
@@ -32,6 +33,7 @@ export default {
   Certificate,
   Domain,
   EnvironmentAccess,
+  EnvironmentBackup,
   Metrics,
   ProjectAccess,
   ProjectLevelVariable,

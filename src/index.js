@@ -250,6 +250,18 @@ export default class Client {
   }
 
   /**
+   * Get backups of environment {environmentId} of project {projectId}
+   *
+   * @param projectId
+   * @param environmentId
+   *
+   * @return Promise EnvironmentBackup[]
+   */
+  getEnvironmentBackups(projectId, environmentId) {
+    return entities.EnvironmentBackup.query({ projectId, environmentId });
+  }
+
+  /**
    * Get the logged-in user's SSH keys.
    *
    * @param bool reset
