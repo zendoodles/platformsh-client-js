@@ -10,9 +10,16 @@ import {
   jso_getAuthUrl,
   jso_getAuthRequest,
   jso_checkfortoken,
+  set_token_expiration,
   jso_wipe,
   jso_wipeStates,
-  epoch
+  jso_saveToken,
+  encodeURL,
+  generatePKCE,
+  epoch,
+  jso_checkforcode,
+  jso_saveCodeVerifier,
+  jso_getCodeVerifier
 } from "../jso";
 import { getConfig } from "../config";
 
@@ -24,7 +31,7 @@ if (isNode) {
   basicAuth = btoa("platform-cli:");
 }
 
-function createIFrame(src) {
+function createIFrame(src, options = {}) {
   let iframe = document.getElementById("logiframe-platformsh");
 
   if (iframe) {
@@ -35,7 +42,9 @@ function createIFrame(src) {
 
   iframe.id = "logiframe-platformsh";
   iframe.style.display = "none";
-  iframe.setAttribute("sandbox", "allow-same-origin");
+  if (options.sandbox) {
+    iframe.setAttribute("sandbox", options.sandbox);
+  }
   iframe.src = src;
   document.body.appendChild(iframe);
 
@@ -87,9 +96,35 @@ function logInWithToken(token) {
   });
 }
 
+const getTokenWithAuthorizationCode = async (
+  authenticationUrl,
+  redirectUri,
+  codeVerifier,
+  code
+) => {
+  const credentials = {
+    grant_type: "authorization_code",
+    redirect_uri: redirectUri,
+    code,
+    code_verifier: codeVerifier
+  };
+
+  const resp = await fetch(`${authenticationUrl}/oauth2/token`, {
+    method: "POST",
+    body: JSON.stringify(credentials)
+  });
+
+  if (resp.status !== 200) {
+    return reject(resp);
+  }
+
+  return await resp.json();
+};
+
 function logInWithRedirect(reset) {
-  return new Promise((resolve, reject) => {
+  return new Promise(async (resolve, reject) => {
     const auth = getConfig();
+    let pkce;
 
     if (!auth.client_id) {
       reject("Client_id in AUTH_CONFIG is mandatory");
@@ -101,6 +136,7 @@ function logInWithRedirect(reset) {
     }
 
     jso_configure({ [auth.provider]: auth });
+
     const storedToken = jso_getToken(auth.provider);
 
     if (storedToken && !reset) {
@@ -109,10 +145,44 @@ function logInWithRedirect(reset) {
 
     jso_wipe();
 
-    const iframe = createIFrame(jso_getAuthUrl(auth.provider, auth.scope));
+    const req = jso_getAuthRequest(auth.provider, auth.scope);
+
+    if (auth.response_type === "code") {
+      // Check for code
+      const oauthResp = jso_checkforcode();
+
+      if (oauthResp) {
+        // Get token with the code
+        const codeVerifier = jso_getCodeVerifier(auth.provider);
+
+        const atoken = await getTokenWithAuthorizationCode(
+          auth.authentication_url,
+          auth.redirect_uri,
+          codeVerifier,
+          oauthResp.code
+        );
+
+        set_token_expiration(atoken, auth);
+
+        jso_saveToken(req.providerID, atoken);
+
+        return resolve(atoken);
+      }
+
+      pkce = generatePKCE();
+
+      req["code_challenge"] = pkce.codeChallenge;
+      req["code_challenge_method"] = "S256";
+      jso_saveCodeVerifier(auth.provider, pkce.codeVerifier);
+    }
+
+    const authUrl = encodeURL(auth.authorization, req);
+    const iframe = createIFrame(authUrl, {
+      sandbox: "allow-same-origin"
+    });
     let attempt = 0;
 
-    const listener = setInterval(function() {
+    const listener = setInterval(async function() {
       let href;
       let iframeDidReturnError;
 
@@ -144,8 +214,28 @@ function logInWithRedirect(reset) {
         );
       }
 
-      if (href && href.indexOf("access_token") !== -1) {
+      if (
+        href &&
+        (href.indexOf("access_token") !== -1 || href.indexOf("code") !== -1)
+      ) {
         clearInterval(listener);
+        if (auth.response_type === "code") {
+          // Check for code
+          const oauthResp = jso_checkforcode(href);
+          // Get token with the code
+          const atoken = await getTokenWithAuthorizationCode(
+            auth.authentication_url,
+            auth.redirect_uri,
+            pkce.codeVerifier,
+            oauthResp.code
+          );
+
+          set_token_expiration(atoken, auth);
+
+          jso_saveToken(req.providerID, atoken);
+
+          return resolve(atoken);
+        }
         jso_checkfortoken(auth.client_id, auth.provider, href, true);
         const token = jso_getToken(auth.provider);
         removeIFrame();
@@ -154,6 +244,95 @@ function logInWithRedirect(reset) {
     }, 500);
   });
 }
+
+const logInWithWebMessageAndPKCE = async reset => {
+  const auth = getConfig();
+
+  return new Promise((resolve, reject) => {
+    try {
+      if (!auth.client_id) {
+        reject("Client_id in AUTH_CONFIG is mandatory");
+      }
+
+      // ensure that there is an access token, redirecting to auth if needed
+      if (!auth.redirect_uri) {
+        // Some targets just need some dynamism
+        auth.redirect_uri = window.location.origin;
+      }
+
+      jso_configure({ [auth.provider]: auth });
+      const storedToken = jso_getToken(auth.provider);
+
+      if (storedToken && !reset) {
+        return resolve(storedToken);
+      }
+
+      jso_wipe();
+      removeIFrame();
+
+      const req = jso_getAuthRequest(auth.provider, auth.scope);
+
+      const pkce = generatePKCE();
+
+      req["code_challenge"] = pkce.codeChallenge;
+      req["code_challenge_method"] = "S256";
+
+      async function receiveMessage(event) {
+        console.log("MESSAGE");
+        console.log(event);
+        console.log(event.data);
+        console.log(event.origin);
+        console.log(auth.authentication_url);
+        if (event.origin !== auth.authentication_url) {
+          return false;
+        }
+        const data = event.data;
+        if (data.error || !data.code || data.state !== req.state) {
+          console.log(req.state);
+          console.log(data);
+          throw new Error();
+        }
+
+        const code = data.code;
+
+        const atoken = await getTokenWithAuthorizationCode(
+          auth.authentication_url,
+          auth.redirect_uri,
+          pkce.codeVerifier,
+          code
+        );
+
+        set_token_expiration(atoken, auth);
+
+        jso_saveToken(req.providerID, atoken);
+
+        removeIFrame();
+
+        return resolve(atoken);
+      }
+
+      window.addEventListener("message", receiveMessage, false);
+
+      const authUrl = encodeURL(auth.authorization, req);
+      createIFrame(authUrl);
+
+      setTimeout(() => {
+        if (auth.popupMode) {
+          return resolve(logInWithPopUp());
+        }
+
+        resolve(logInWithRedirect());
+      }, 5000);
+    } catch (err) {
+      console.log(err);
+      if (auth.popupMode) {
+        return logInWithPopUp();
+      }
+
+      return logInWithRedirect();
+    }
+  });
+};
 
 export const logInWithPopUp = async reset => {
   if (localStorage.getItem("redirectFallBack") === "true") {
@@ -216,5 +395,16 @@ export default (token, reset, config) => {
     return logInWithToken(token).catch(e => new Error(e));
   }
 
-  return logInWithRedirect(reset, config);
+  console.log("Check Mode...");
+  console.log(config);
+  if (config.response_mode === "web_message" && config.prompt === "none") {
+    console.log("In web message mode");
+    return logInWithWebMessageAndPKCE(reset);
+  }
+
+  if (config.popupMode) {
+    return logInWithPopUp(reset);
+  }
+
+  return logInWithRedirect(reset);
 };
