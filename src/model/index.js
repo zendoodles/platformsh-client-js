@@ -33,6 +33,7 @@ import Tree from "./git/Tree";
 import Blob from "./git/Blob";
 import TwoFactorAuthentication from "./TwoFactorAuthentication";
 import ConnectedAccount from "./ConnectedAccount";
+import Invitation from "./Invitation";
 
 export default {
   Account,
@@ -69,5 +70,6 @@ export default {
   TwoFactorAuthentication,
   ConnectedAccount,
   Ticket,
-  TicketPriority
+  TicketPriority,
+  Invitation
 };

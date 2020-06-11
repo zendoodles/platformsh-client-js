@@ -1010,4 +1010,19 @@ export default class Client {
   deleteProfilePicture(userId) {
     return entities.AccountsProfile.deleteProfilePicture(userId);
   }
+
+  /**
+   * Create an invitation
+   *
+   * @param {string} userId User identifier
+   *
+   * @returns {Promise} Resolves if the picture was deleted.
+   */
+  createInvitation(projectId, role, environments) {
+    return new entities.Invitation({
+      projectId,
+      environments,
+      role
+    }).save();
+  }
 }
